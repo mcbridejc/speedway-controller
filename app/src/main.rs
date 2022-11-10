@@ -1,5 +1,5 @@
 #![no_main]
-#![cfg_attr(not(test), no_std)]
+#![no_std]
 
 use cortex_m;
 use cortex_m_rt::entry;
@@ -7,73 +7,77 @@ use panic_halt as _;
 
 use stm32f0xx_hal as hal;
 
+use touch::TouchConfig;
+use touch::linear::HalfEndedLinear;
+use touch::button::Button;
+
 use crate::hal::pac;
 use crate::hal::prelude::*;
 use crate::hal::tsc::{Tsc, TscPin};
 use crate::hal::rcc::Rcc;
 
-mod touch_buttons;
-struct TouchUi<
-    Rev1Pin,
-    Rev2Pin,
-    Rev3Pin,
-    StopPin,
-    Fwd1Pin,
-    Fwd2Pin,
-    Fwd3Pin,
-> 
-{
-    rev1: Rev1Pin,
-    rev2: Rev2Pin,
-    rev3: Rev3Pin,
-    stop: StopPin,
-    fwd1: Fwd1Pin,
-    fwd2: Fwd2Pin,
-    fwd3: Fwd3Pin,
-    tsc: Tsc
-}
+// mod touch_buttons;
+// struct TouchUi<
+//     Rev1Pin,
+//     Rev2Pin,
+//     Rev3Pin,
+//     StopPin,
+//     Fwd1Pin,
+//     Fwd2Pin,
+//     Fwd3Pin,
+// > 
+// {
+//     rev1: Rev1Pin,
+//     rev2: Rev2Pin,
+//     rev3: Rev3Pin,
+//     stop: StopPin,
+//     fwd1: Fwd1Pin,
+//     fwd2: Fwd2Pin,
+//     fwd3: Fwd3Pin,
+//     tsc: Tsc
+// }
 
-impl <
-    Rev1Pin,
-    Rev2Pin,
-    Rev3Pin,
-    StopPin,
-    Fwd1Pin,
-    Fwd2Pin,
-    Fwd3Pin,
-> TouchUi<
-    Rev1Pin,
-    Rev2Pin,
-    Rev3Pin,
-    StopPin,
-    Fwd1Pin,
-    Fwd2Pin,
-    Fwd3Pin,
-> {
-    pub fn new(
-        rev1: Rev1Pin,
-        rev2: Rev2Pin,
-        rev3: Rev3Pin,
-        stop: StopPin,
-        fwd1: Fwd1Pin,
-        fwd2: Fwd2Pin,
-        fwd3: Fwd3Pin,
-        tsc: pac::TSC,
-        rcc: &mut Rcc,
-    ) -> Self {
+// impl <
+//     Rev1Pin,
+//     Rev2Pin,
+//     Rev3Pin,
+//     StopPin,
+//     Fwd1Pin,
+//     Fwd2Pin,
+//     Fwd3Pin,
+// > TouchUi<
+//     Rev1Pin,
+//     Rev2Pin,
+//     Rev3Pin,
+//     StopPin,
+//     Fwd1Pin,
+//     Fwd2Pin,
+//     Fwd3Pin,
+// > {
+//     pub fn new(
+//         rev1: Rev1Pin,
+//         rev2: Rev2Pin,
+//         rev3: Rev3Pin,
+//         stop: StopPin,
+//         fwd1: Fwd1Pin,
+//         fwd2: Fwd2Pin,
+//         fwd3: Fwd3Pin,
+//         tsc: pac::TSC,
+//         rcc: &mut Rcc,
+//     ) -> Self {
         
-        Self {
-            rev1, rev2, rev3, stop, fwd1, fwd2, fwd3,
-            tsc: Tsc::tsc(tsc, rcc, None)
-        }
-    }
+//         Self {
+//             rev1, rev2, rev3, stop, fwd1, fwd2, fwd3,
+//             tsc: Tsc::tsc(tsc, rcc, None)
+//         }
+//     }
 
-    pub fn read_rev(&mut self) -> (u16, u16, u16) {
+//     pub fn read_rev(&mut self) -> (u16, u16, u16) {
 
-    }
-}
+//     }
+// }
 
-
+#[derive(Clone, Copy, Debug)]
 struct TscSample {
     group: u8,
     sample: u8,
@@ -82,23 +86,31 @@ struct TscSample {
 
 struct TscWrapper {
     tsc: Tsc,
+    max_count: u16,
 }
 
 impl TscWrapper {
     pub fn new(tsc: pac::TSC, rcc: &mut Rcc) -> Self {
+        let config = hal::tsc::Config {
+            clock_prescale: None,
+            max_count: Some(hal::tsc::MaxCount::U16383),
+            charge_transfer_high: None,
+            charge_transfer_low: None,
+        };
         Self {
-            tsc: Tsc::tsc(tsc, rcc, None),
+            tsc: Tsc::tsc(tsc, rcc, Some(config)),
+            max_count: 16383,
         }
     }
 
-    pub fn sample<const N: usize>(&mut self, samples: [TscSample; N]) -> [Option<u16>; N] {
+    pub fn sample<const N: usize>(&mut self, samples: [TscSample; N]) -> [u16; N] {
         // IMHO all HAL peripheral drivers should include a pub register block for just this kind of
         // extension, but they don't so steal our own.
         let mut regs = unsafe { pac::Peripherals::steal().TSC };
 
-        let iogcsr: u32 = 0;
-        let ioscr: u32 = 0;
-        let ioccr: u32 = 0;
+        let mut iogcsr: u32 = 0;
+        let mut ioscr: u32 = 0;
+        let mut ioccr: u32 = 0;
 
         for s in samples {
             // Enable the group
@@ -122,18 +134,17 @@ impl TscWrapper {
         // when MAX COUNT is reached will not be set.
         let group_status = regs.iogcsr.read().bits() >> 16;
         
-        let result = [None; N];
+        let mut result = [self.max_count + 1; N];
         for i in 0..samples.len() {
             let s = &samples[i];
             if group_status & (1 << (s.group - 1)) != 0 {
-                result[i] = Some(self.tsc.read_unchecked(s.group));
+                result[i] = self.tsc.read_unchecked(s.group);
             }
         }
 
         result
     }
 }
-
 
 static SAMPLE_GROUP1: [TscSample; 4] = [
     TscSample { group: 1, sample: 2, channel: 1}, // Rev 1
@@ -148,11 +159,16 @@ static SAMPLE_GROUP2: [TscSample; 3] = [
     TscSample { group: 3, sample: 4, channel: 3}, // Fwd 3
 ];
 
-
+static TOUCH_CONFIG: TouchConfig = TouchConfig {
+    detect_threshold: 100,
+    detect_hysteresis: 5,
+    calibration_delay: 10,
+    calibration_samples: 10,
+    debounce: 3,
+};
 
 fn read_all_touch(tsc: &mut TscWrapper) {
-    let read1 = tsc.sample(SAMPLE_GROUP1);
-    let read2 = tsc.sample(SAMPLE_GROUP2);
+
 
 
 }
@@ -182,24 +198,30 @@ fn main() -> ! {
     let g6_cap = gpiob.pb12.into_alternate_af3(&fake_cs);
 
 
-    let tsc = TscWrapper::new(dp.TSC, &mut rcc);
-    let touch = TouchUi::new(
-        rev1,
-        rev2,
-        rev3,
-        stop,
-        fwd1,
-        fwd2,
-        fwd3,
-        dp.TSC,
-        &mut rcc,
-    );
+    let mut touch = TscWrapper::new(dp.TSC, &mut rcc);
+
 
 
     // let sample_config1: [SamplingConfig; 4] = [
     //     rev1.group(), 
     // ];
-    loop {
 
+    let mut rev_linear = HalfEndedLinear::new(Some(&TOUCH_CONFIG));
+    let mut fwd_linear = HalfEndedLinear::new(Some(&TOUCH_CONFIG));
+    let mut stop_button = Button::new(Some(&TOUCH_CONFIG));
+    loop {
+        let read1 = touch.sample(SAMPLE_GROUP1);
+        let read2 = touch.sample(SAMPLE_GROUP2);
+        
+        let mut rev_samples: [u16; 3] = [0; 3];
+        rev_samples.copy_from_slice(&read1[0..3]);
+        rev_linear.push(rev_samples);
+
+        let mut fwd_samples: [u16; 3] = [0; 3];
+        fwd_samples.copy_from_slice(&read2[0..3]);
+        fwd_linear.push(fwd_samples);
+        
+        let mut stop_samples: [u16; 1] = [read1[3]];
+        stop_button.push(stop_samples);
     }
 }

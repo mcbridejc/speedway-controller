@@ -10,3 +10,4 @@ cortex-m = "0.7"
 cortex-m-rt = "0.7"
 panic-halt = "0.2"
 stm32f0xx-hal = { version = "0.18", features = ["stm32f051"] }
+touch = { path = '../touch' }

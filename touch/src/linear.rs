@@ -1,31 +1,8 @@
 
-enum State {
-    Calibrate,
-    Idle,
-    Active,
-}
-
-pub struct HalfEndedConfig {
-    detect_threshold: u16,
-    detect_hysteresis: u16,
-    calibration_delay: u16,
-    calibration_samples: u16,
-}
-
-impl HalfEndedConfig {
-    const fn default() -> Self {
-        Self {
-            detect_threshold: 100,
-            detect_hysteresis: 5,
-            calibration_delay: 10,
-            calibration_samples: 16,
-        }
-    }
-}
-
-const DEFAULT_HALF_ENDED_CONFIG: HalfEndedConfig = HalfEndedConfig::default();
-pub const FULL_SCALE: u16 = 1024;
-const DEBOUNCE: u16 = 4;
+use crate::{TouchConfig, TouchState};
+use crate::DEFAULT_TOUCH_CONFIG;
+use crate::FULL_SCALE;
+use crate::button::Button;
 
 pub fn half_ended_pos(deltas: &[u16], detect_threshold: u16) -> Option<u16> {
     let mut delta_high: u16 = 0;
@@ -116,76 +93,44 @@ pub fn half_ended_pos(deltas: &[u16], detect_threshold: u16) -> Option<u16> {
 /// | 1 |  2  | ... |  N  | 1 |
 /// ---------------------------
 pub struct HalfEndedLinear<'a, const N: usize> {
-    reference: [u32; N], /// Store reference offset, and accumulations during calibration
-    state: State,
-    counter: i16, // Used for debounce, and other state
-    config: &'a HalfEndedConfig,
+    button: Button<'a, N>,
+    deltas: [u16; N],
 }
 
 impl<'a, const N: usize> HalfEndedLinear<'a, N> {
-    
-
-    pub fn new(config: Option<&'a HalfEndedConfig>) -> Self {
-        let config = config.unwrap_or(&DEFAULT_HALF_ENDED_CONFIG);
+    pub fn new(config: Option<&'a TouchConfig>) -> Self {
         Self { 
-            reference: [0; N],
-            state: State::Calibrate,
-            counter: -(config.calibration_delay as i16),
-            config,
+            button: Button::new(config),
+            deltas: [0; N],
         }
     }
 
-    pub fn calc_pos(&mut self, deltas: [u16; N]) -> Option<u16> {
-        half_ended_pos(&deltas, self.config.detect_threshold)
+    pub fn pos(&mut self) -> Option<u16> {
+        if self.active() {
+            half_ended_pos(&self.deltas, self.button.config.detect_threshold)
+        } else {
+            None
+        }
     }
 
+    pub fn active(&self) -> bool {
+        self.button.active()
+    }
     /// Input a new sample for all electrodes in the linear array
     /// 
     /// Returns the latest positions if a touch is detected, otherwise None
     pub fn push(&mut self, measurements: [u16; N]) -> Option<u16> {
-
-        let mut deltas = [0u16; N];
         for i in 0..N {
-            deltas[i] = (self.reference[i] as u16).saturating_sub(measurements[i]);
+            self.deltas[i] = (self.button.reference[i] as u16).saturating_sub(measurements[i]);
         }
 
-        match self.state {
-            State::Calibrate => {
-                self.counter += 1;
-                if self.counter > 0 && self.counter < self.config.calibration_samples as i16 {
-                    for i in 0..N {
-                        self.reference[i] += measurements[i] as u32;
-                    }    
-                } else if self.counter == self.config.calibration_samples as i16 {
-                    for i in 0..N {
-                        self.reference[i] /= self.config.calibration_samples as u32;
-                    }
-                    self.state = State::Idle;
-                }
-                None
+        let state = self.button.push(measurements);
+
+        match state {
+            TouchState::Active => {
+                self.pos()
             },
-            State::Idle => {
-                if deltas.iter().any(|x| *x > self.config.detect_threshold) {
-                    self.counter += 1;
-                    if self.counter > DEBOUNCE as i16 {
-                        self.state = State::Active;
-                        self.counter = 0;
-                        self.calc_pos(deltas)
-                    } else {
-                        None
-                    }
-                } else {
-                    self.counter = 0;
-                    None
-                }
-            },
-            State::Active => {
-                let pos = self.calc_pos(deltas);
-                if pos.is_none() {
-                    self.state = State::Idle;
-                }
-                pos
-            },
+            _ => None
         }
     }
 
@@ -194,6 +139,9 @@ impl<'a, const N: usize> HalfEndedLinear<'a, N> {
 
     }
 }
+
+
+
 
 #[cfg(test)]
 pub mod test {

@@ -177,6 +177,7 @@ dependencies = [
  "cortex-m-rt",
  "panic-halt",
  "stm32f0xx-hal",
+ "touch",
 ]
 
 [[package]]
