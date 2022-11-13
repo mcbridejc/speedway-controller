@@ -1,45 +1,48 @@
 
 use crate::{TouchConfig, TouchState};
-use crate::DEFAULT_TOUCH_CONFIG;
 use crate::FULL_SCALE;
 use crate::button::Button;
 
 pub fn half_ended_pos(deltas: &[u16], detect_threshold: u16) -> Option<u16> {
-    let mut delta_high: u16 = 0;
-    let mut delta_mid: u16 = 0;
-    let mut delta_low: u16 = 0;
-    let mut index_high: u16 = 0;
-    let mut index_mid: u16 = 0;
+    let mut delta_high: i32 = 0;
+    let mut delta_mid: i32 = 0;
+    let mut delta_low: i32 = 0;
+    let mut index_high: u32 = 0;
+    let mut index_mid: u32 = 0;
+    let mut index_low: u32 = 0;
 
     // Find the three highest deltas and sort them.
     for i in 0..deltas.len() {
         // Saturate at zero because negative delta means noise.
-        let delta = deltas[i];
-        
-        if delta > delta_high {
+        let delta = deltas[i] as i32;
+
+        if delta >= delta_high {
             delta_low = delta_mid;
             delta_mid = delta_high;
-            index_mid = index_high;
             delta_high = delta;
-            index_high = i as u16;
-        } else if delta > delta_mid {
+            index_low = index_mid;
+            index_mid = index_high;
+            index_high = i as u32;
+        } else if delta >= delta_mid {
             delta_low = delta_mid;
             delta_mid = delta;
-            index_mid = i as u16;
-        } else if delta > delta_low {
+            index_low = index_mid;
+            index_mid = i as u32;
+        } else if delta >= delta_low {
             delta_low = delta;
+            index_low = i as u32;
         }
     }
 
     // Require two electrodes to have significant signal to calculate a position
-    if delta_mid < detect_threshold {
+    if delta_mid < detect_threshold as i32 {
         return None;
     }
 
     // The two electrodes must be neighbors
-    if (index_mid as i16 - index_high as i16).abs() != 1 && 
-       !((index_high == 0 || index_mid == 0) && 
-       (index_high == deltas.len() as u16 - 1 || index_mid == deltas.len() as u16 - 1)) {
+    if (index_mid as i16 - index_high as i16).abs() != 1 &&
+       !((index_high == 0 || index_mid == 0) &&
+       (index_high == deltas.len() as u32 - 1 || index_mid == deltas.len() as u32 - 1)) {
         return None;
     }
 
@@ -47,59 +50,69 @@ pub fn half_ended_pos(deltas: &[u16], detect_threshold: u16) -> Option<u16> {
     // and 1 is between the n-1 and n-2 electrodes, on the right. It is assumed that the
     // measurements provided are ordered left-to-right, with the exception that the first sensor is
     // be found on both ends.
-    
-    // Compute the center of the segment with the mid capacitance (delta_high)
-    let segment_size = FULL_SCALE as i16 / (deltas.len() as i16 - 1);
-    let center = if index_high == 0 {
-        if index_mid == 1 {
-            // The left is end is active
-            -segment_size / 2
-        } else if index_mid == deltas.len() as u16 - 1 {
-            // The right end is active
-            (deltas.len() as i16 - 1) * segment_size - segment_size / 2
-        } else {
-            // Inconsistent
-            // Here, the largest delta is the end pads, but the second largest is not a neighbnor. 
-            return None
-        }
+
+    let segment_size: i32 = FULL_SCALE as i32 / (deltas.len() as i32 - 1);
+    let x0: i32  = if index_low != 0 {
+        segment_size * (index_low as i32) - segment_size / 2
     } else {
-        index_high as i16 * segment_size - segment_size / 2
+        // It's a half-end
+        if index_high == 1 {
+            -(segment_size / 2)
+        } else {
+            FULL_SCALE as i32 + segment_size / 2
+        }
+    };
+    let x1: i32 = if index_mid != 0 {
+        segment_size * (index_mid as i32) - segment_size / 2
+    } else {
+        if index_high == 1 {
+            -(segment_size / 2)
+        } else {
+            FULL_SCALE as i32 + segment_size / 2
+        }
     };
 
-    // Now that we found the center point of the most active pad, find an adjustment based on the other two
-    // Adjustment is negative if the mid pad is left of the high pad
-    let negative_sign = index_high == 0 && index_mid == 1 || index_high > index_mid;
-    let adjustment = (segment_size as u32 * (delta_high - delta_low) as u32) / (delta_high + delta_mid + delta_low) as u32;
-    let mut pos = if negative_sign {
-        center - adjustment as i16
+    let x2: i32 = if index_high != 0 {
+        segment_size * (index_high as i32) - segment_size / 2
     } else {
-        center + adjustment as i16
+        if index_mid == 1 {
+            -(segment_size / 2)
+        } else {
+            FULL_SCALE as i32 + segment_size / 2
+        }
     };
-    if pos < 0 {
-        pos = 0
-    } else if pos > FULL_SCALE as i16 - 1 {
-        pos = FULL_SCALE as i16 - 1;
+
+    // println!("Index: {} {} {}", index_low, index_mid, index_high);
+    // println!("Delta: {} {} {}", delta_low, delta_mid, delta_high);
+    // println!("x0: {}, x1: {}, x2: {}", x0, x1, x2);
+    // xn are 10 bits, deltas are (at most) 14 bits. i32 is safe from overflow.
+    let mut center = (x0 * delta_low + x1 * delta_mid + x2 * delta_high) / (delta_low + delta_mid + delta_high);
+
+    if center < 0 {
+        center = 0;
+    } else if center > FULL_SCALE as i32 - 1 {
+        center = FULL_SCALE as i32 - 1;
     }
 
-    Some(pos as u16)
+    Some(center as u16)
 }
 
 
-/// Implement a linear touch input with "half-end" configuation, where the 
-/// first electrode and last electrodes are half-size, and both connected to 
+/// Implement a linear touch input with "half-end" configuation, where the
+/// first electrode and last electrodes are half-size, and both connected to
 /// channel one. The electrode array looks like:
-/// 
+///
 /// ---------------------------
 /// | 1 |  2  | ... |  N  | 1 |
 /// ---------------------------
 pub struct HalfEndedLinear<'a, const N: usize> {
-    button: Button<'a, N>,
-    deltas: [u16; N],
+    pub button: Button<'a, N>,
+    pub deltas: [u16; N],
 }
 
 impl<'a, const N: usize> HalfEndedLinear<'a, N> {
     pub fn new(config: Option<&'a TouchConfig>) -> Self {
-        Self { 
+        Self {
             button: Button::new(config),
             deltas: [0; N],
         }
@@ -117,7 +130,7 @@ impl<'a, const N: usize> HalfEndedLinear<'a, N> {
         self.button.active()
     }
     /// Input a new sample for all electrodes in the linear array
-    /// 
+    ///
     /// Returns the latest positions if a touch is detected, otherwise None
     pub fn push(&mut self, measurements: [u16; N]) -> Option<u16> {
         for i in 0..N {
@@ -149,9 +162,9 @@ pub mod test {
 
     #[test]
     fn test_half_ended_pos() {
-        
+
         let detect_threshold = 15;
-        
+
         let pos = half_ended_pos(&[0, 20, 20], detect_threshold);
         assert_eq!(pos, Some(512));
 
@@ -165,15 +178,22 @@ pub mod test {
         assert_eq!(pos, Some(0));
 
         let pos = half_ended_pos(&[100, 200, 100], detect_threshold);
-        assert_eq!(pos, Some(128));
+        assert_eq!(pos, Some(256));
 
         let pos = half_ended_pos(&[100, 200, 80], detect_threshold);
-        assert_eq!(pos, Some(95));
+        assert_eq!(pos, Some(229));
 
         let pos = half_ended_pos(&[200, 0, 20], detect_threshold);
         assert_eq!(pos, Some(1023));
 
         let pos = half_ended_pos(&[200, 10, 200], detect_threshold);
         assert_eq!(pos, Some(1005));
+
+        let pos = half_ended_pos(&[5200, 0, 5800], detect_threshold);
+        assert_eq!(pos, Some(1010));
+
+
+        let pos = half_ended_pos(&[0, 3900, 5800], detect_threshold);
+        assert_eq!(pos, Some(562));
     }
 }
