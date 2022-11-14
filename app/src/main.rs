@@ -245,7 +245,7 @@ fn main() -> ! {
     loop {
         let time = TIME.load(Ordering::Relaxed);
         if time >= next_time {
-            next_time += 2;
+            next_time += 4;
 
             let read1 = touch.sample(SAMPLE_GROUP1);
 
@@ -303,9 +303,9 @@ fn main() -> ! {
 
                 let magvel = current_velocity.abs();
                 if magvel < 200 {
-                    pwm.set_power(8000);
-                } else if magvel < 500 {
                     pwm.set_power(16000);
+                } else if magvel < 500 {
+                    pwm.set_power(18000);
                 } else {
                     pwm.set_power(32767);
                 }
@@ -322,7 +322,7 @@ fn main() -> ! {
             // }
         }
 
-        cortex_m::asm::wfi();
+        //cortex_m::asm::wfi();
 
     }
 }
