@@ -96,7 +96,7 @@ pub mod uart1 {
         // Read any available bytes from the serial port
         match serial.read() {
             Ok(rxbyte) => {
-                rx_q_producer.enqueue(rxbyte).ok().unwrap();
+                rx_q_producer.enqueue(rxbyte).ok();
             },
             Err(_) => () 
         };
