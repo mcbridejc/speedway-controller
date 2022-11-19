@@ -1,6 +1,11 @@
 #![no_main]
 #![no_std]
 
+#[allow(dead_code)]
+mod pwm;
+mod serial;
+mod step_timer;
+
 use core::sync::atomic::{AtomicBool, Ordering, AtomicU32};
 use core::cell::RefCell;
 use cortex_m;
@@ -11,162 +16,61 @@ use panic_halt as _;
 use pwm::CurrentControl;
 use stm32f0xx_hal as hal;
 
-use touch::TouchConfig;
-use touch::linear::HalfEndedLinear;
-use touch::button::Button;
+use touch::{
+    tsc::{Tsc, Channel, SampleConfig},
+    TouchConfig,
+    linear::HalfEndedLinear,
+    button::Button,
+};
 
 use crate::hal::pac;
 use crate::hal::pac::interrupt;
 use crate::hal::prelude::*;
-use crate::hal::tsc::{Tsc};
-use crate::hal::rcc::Rcc;
 
-mod pwm;
-mod serial;
+use step_timer::StepTimer;
 
-#[derive(Clone, Copy, Debug)]
-struct TscSample {
-    group: u8,
-    sample: u8,
-    channel: u8,
-}
+// Configure the capacitive channels which will be read together
+// During each acquisition, any number of groups can be active on selected
+// channels. Each group has one pin dedicated to be used as the sampling
+// capacitor, and up to three pins connected to pads to be measured. For this, it is
+// setup so that all of the electrodes of a slider can be read simultaneously.
+use Channel::*;
+static SAMPLE_GROUP1: SampleConfig = SampleConfig::new()
+    .sample(G1Ch2).channel(G1Ch1) // Rev 1
+    .sample(G2Ch3).channel(G2Ch1) // Rev 2
+    .sample(G3Ch4).channel(G3Ch2) // Rev 3
+    .sample(G6Ch2).channel(G6Ch1); // Stop
 
-struct TscWrapper {
-    tsc: Tsc,
-    max_count: u16,
-}
-
-impl TscWrapper {
-    pub fn new(tsc: pac::TSC, rcc: &mut Rcc) -> Self {
-        let config = hal::tsc::Config {
-            clock_prescale: None,
-            max_count: Some(hal::tsc::MaxCount::U8191),
-            charge_transfer_high: None,
-            charge_transfer_low: None,
-        };
-        Self {
-            tsc: Tsc::tsc(tsc, rcc, Some(config)),
-            max_count: 8191,
-        }
-    }
-
-    pub fn sample<const N: usize>(&mut self, samples: [TscSample; N]) -> [u16; N] {
-        // IMHO all HAL peripheral drivers should include a pub register block for just this kind of
-        // extension, but they don't so steal our own.
-        let regs = unsafe { pac::Peripherals::steal().TSC };
-
-        let mut iogcsr: u32 = 0;
-        let mut ioscr: u32 = 0;
-        let mut ioccr: u32 = 0;
-
-        for s in samples {
-            // Enable the group
-            iogcsr |= 1 << (s.group - 1);
-
-            // Set the sample cap input
-            ioscr |= 1 << (s.group - 1) * 4 + s.sample - 1;
-
-            // Enable the input
-            ioccr |= 1 << (s.group - 1) * 4 + s.channel - 1;
-        }
-
-        // Clear the enabled groups
-        regs.iogcsr.write(|w| unsafe { w.bits(iogcsr) });
-        regs.ioscr.write(|w| unsafe { w.bits(ioscr) });
-        regs.ioccr.write(|w| unsafe { w.bits(ioccr) });
-
-        self.tsc.acquire().ok();
-
-        // Status bits indicate if the group completed successfully. Any group not completed
-        // when MAX COUNT is reached will not be set.
-        let group_status = regs.iogcsr.read().bits() >> 16;
-
-        let mut result = [self.max_count + 1; N];
-        for i in 0..samples.len() {
-            let s = &samples[i];
-            if group_status & (1 << (s.group - 1)) != 0 {
-                result[i] = self.tsc.read_unchecked(s.group);
-            }
-        }
-
-        result
-    }
-}
-
-static SAMPLE_GROUP1: [TscSample; 4] = [
-    TscSample { group: 1, sample: 2, channel: 1}, // Rev 1
-    TscSample { group: 2, sample: 3, channel: 1}, // Rev 2
-    TscSample { group: 3, sample: 4, channel: 2}, // Rev 3
-    TscSample { group: 6, sample: 2, channel: 1}, // Stop
-];
-
-static SAMPLE_GROUP2: [TscSample; 3] = [
-    TscSample { group: 6, sample: 2, channel: 3}, // Fwd 1
-    TscSample { group: 2, sample: 3, channel: 2}, // Fwd 2
-    TscSample { group: 3, sample: 4, channel: 3}, // Fwd 3
-];
+static SAMPLE_GROUP2: SampleConfig = SampleConfig::new()
+    .sample(G6Ch2).channel(G6Ch3) // Fwd 1
+    .sample(G2Ch3).channel(G2Ch2) // Fwd 2
+    .sample(G3Ch4).channel(G3Ch3); // Fwd 3
 
 static TOUCH_CONFIG: TouchConfig = TouchConfig {
-    detect_threshold: 100,
-    detect_hysteresis: 5,
+    detect_threshold: 200,
+    detect_hysteresis: 50,
     calibration_delay: 10,
     calibration_samples: 10,
     debounce: 3,
 };
 
+/// The minimum microstep frequency
+/// At speeds below this, current is turned off
 const MIN_STEP_FREQ: u32 = 8;
+/// The maximum microstep frequency
 const MAX_STEP_FREQ: u32 = 900;
+/// The acceleration in steps/s per each 40ms period
 const ACCEL: u32 = 40;
+/// Duty cycle at slower speeds
+const LOW_POWER_DUTY: i16 = 22000;
+/// Duty cycle at high speeds
+const HIGH_POWER_DUTY: i16 = 32767;
+/// When velocity exceeds this threshold, switch from low to high power
+const POWER_SPEED_THRESHOLD: i32 = 500;
 
 static REVERSE_DIR: AtomicBool = AtomicBool::new(false);
 static PWM: Mutex<RefCell<Option<CurrentControl>>> = Mutex::new(RefCell::new(None));
 static TIME: AtomicU32 = AtomicU32::new(0);
-
-struct StepTimer {
-    tim: pac::TIM2,
-    clk_freq: u32,
-}
-
-impl StepTimer {
-    pub fn new(tim: pac::TIM2, rcc: &mut Rcc, overflow_freq: u32) -> Self {
-        let rccregs = unsafe { pac::Peripherals::steal().RCC };
-        rccregs.apb1enr.modify(|_, w| w.tim2en().set_bit());
-
-        // If pclk is prescaled from hclk, the frequency fed into the timers is doubled
-        let clk_freq = if rcc.clocks.hclk().0 == rcc.clocks.pclk().0 {
-            rcc.clocks.pclk().0
-        } else {
-            rcc.clocks.pclk().0 * 2
-        };
-
-        // start counter
-        tim.cr1.modify(|_, w| {
-            w.cen().set_bit()
-            .arpe().set_bit()
-        });
-
-        let mut obj = Self {
-            tim,
-            clk_freq
-        };
-        obj.set_overflow_freq(overflow_freq);
-        obj.tim.egr.write(|w| w.ug().set_bit());
-        obj
-    }
-
-    pub fn enable_irq(&mut self) {
-        self.tim.dier.write(|w| w.uie().set_bit());
-    }
-
-    pub fn disable_irq(&mut self) {
-        self.tim.dier.write(|w| w.uie().clear_bit());
-    }
-
-    pub fn set_overflow_freq(&mut self, ovf_freq: u32) {
-        let arr = self.clk_freq / ovf_freq;
-        self.tim.arr.write(|w| w.arr().bits(arr));
-    }
-}
 
 #[entry]
 fn main() -> ! {
@@ -179,8 +83,7 @@ fn main() -> ! {
     let gpioa = dp.GPIOA.split(&mut rcc);
     let gpiob = dp.GPIOB.split(&mut rcc);
 
-
-    // A library requiring a critical section to set a gpio AF register is bad and I just won't.
+    // No critical section required.
     let fake_cs = unsafe { cortex_m::interrupt::CriticalSection::new() };
 
     // Initialize touch pins
@@ -204,13 +107,14 @@ fn main() -> ! {
     let _b_in1 = gpioa.pa9.into_alternate_af2(&fake_cs);
     let _b_in2 = gpioa.pa8.into_alternate_af2(&fake_cs);
 
-    let mut touch = TscWrapper::new(dp.TSC, &mut rcc);
+    let mut touch = Tsc::new(None);
 
     let mut pwm = pwm::CurrentControl::new(dp.TIM1, dp.TIM3, &mut rcc, 30.khz());
+
     // Fixed guard rail duty cycle for now.
     // We might want to scale this with input voltage to approximately constant current.
     pwm.set_guard_duty(12000);
-    //pwm.set_phase_duty(Some(-8000), Some(8000));
+
     pwm.enable();
     cortex_m::interrupt::free(|cs| {
         PWM.borrow(cs).borrow_mut().replace(pwm);
@@ -239,32 +143,38 @@ fn main() -> ! {
     let mut current_velocity: i32 = 0;
     let mut next_time = 10;
 
-    // step_timer.enable_irq();
-    // step_timer.set_overflow_freq(2);
-
     loop {
         let time = TIME.load(Ordering::Relaxed);
         if time >= next_time {
             next_time += 4;
 
-            let read1 = touch.sample(SAMPLE_GROUP1);
+            let mut fwd_samples = [0u16; 3];
+            let mut rev_samples = [0u16; 3];
+            let mut stop_samples = [0u16; 1];
 
+            touch.acquire(&SAMPLE_GROUP1);
+            rev_samples[0] = touch.read_group(1);
+            rev_samples[1] = touch.read_group(2);
+            rev_samples[2] = touch.read_group(3);
+            stop_samples[0] = touch.read_group(6);
+
+            // Some delay is needed to discharge the sampling capacitor
             cortex_m::asm::delay(1000);
-            let read2 = touch.sample(SAMPLE_GROUP2);
 
-            let mut rev_samples: [u16; 3] = [0; 3];
-            rev_samples.copy_from_slice(&read1[0..3]);
+            touch.acquire(&SAMPLE_GROUP2);
+            fwd_samples[0] = touch.read_group(6);
+            fwd_samples[1] = touch.read_group(2);
+            fwd_samples[2] = touch.read_group(3);
+
+            // Run touch sense processing
             rev_linear.push(rev_samples);
-            let rev_pos = rev_linear.pos();
-
-            let mut fwd_samples: [u16; 3] = [0; 3];
-            fwd_samples.copy_from_slice(&read2[0..3]);
             fwd_linear.push(fwd_samples);
-            let fwd_pos = fwd_linear.pos();
-
-            let stop_samples: [u16; 1] = [read1[3]];
             stop_button.push(stop_samples);
 
+            let fwd_pos = fwd_linear.pos();
+            let rev_pos = rev_linear.pos();
+
+            // Update target velocity if any buttons are pressed
             target_velocity = if stop_button.active() {
                 0
             } else if let Some(pos) = rev_pos {
@@ -275,6 +185,7 @@ fn main() -> ! {
                 target_velocity
             };
 
+            // Perform velocity slewing
             if target_velocity > current_velocity {
                 current_velocity += ACCEL as i32;
                 if current_velocity > target_velocity {
@@ -301,29 +212,35 @@ fn main() -> ! {
                     step_timer.enable_irq();
                 }
 
+                // Set output power based on speed. Empirically, less current is required at lower
+                // speed
                 let magvel = current_velocity.abs();
-                if magvel < 200 {
-                    pwm.set_power(16000);
-                } else if magvel < 500 {
-                    pwm.set_power(18000);
+                if magvel < POWER_SPEED_THRESHOLD {
+                    pwm.set_power(LOW_POWER_DUTY);
                 } else {
-                    pwm.set_power(32767);
+                    pwm.set_power(HIGH_POWER_DUTY);
                 }
             });
-            // if time % 20 == 0 {
-            //     let mut writer = serial::uart1::writer();
-            //     //core::fmt::write(&mut writer, format_args!("REF: {} {} {}\r\n", rev_linear.reference[0], rev_linear.reference[1], rev_linear.reference[2]));
 
-            //     // core::fmt::write(&mut writer, format_args!("READ {} {} {} {} {} {} {}\r\n",
-            //     //     fwd_samples[0], fwd_samples[1], fwd_samples[2],
-            //     //     rev_samples[0], rev_samples[1], rev_samples[2], stop_samples[0])).unwrap();
-            //     core::fmt::write(&mut writer, format_args!("DELTA: {} {} {}\r\n", fwd_linear.deltas[0], fwd_linear.deltas[1], fwd_linear.deltas[2]));
-            //     core::fmt::write(&mut writer, format_args!("POS: {} {} {}\r\n", fwd_linear.pos().unwrap_or(65535), rev_linear.pos().unwrap_or(65535), stop_button.active()));
-            // }
+            // Periodically print the capacitive touch values out the serial port
+            if time % 20 == 0 {
+                let mut writer = serial::uart1::writer();
+                core::fmt::write(&mut writer, format_args!("READ {} {} {} {} {} {} {}\r\n",
+                    fwd_samples[0], fwd_samples[1], fwd_samples[2],
+                    rev_samples[0], rev_samples[1], rev_samples[2],
+                    stop_samples[0])
+                ).unwrap();
+
+                core::fmt::write(
+                    &mut writer,
+                    format_args!("Fwd: {} Rev: {} Stop: {}\r\n",
+                        fwd_linear.pos().unwrap_or(65535),
+                        rev_linear.pos().unwrap_or(65535),
+                        stop_button.active()
+                    )
+                ).unwrap();
+            }
         }
-
-        //cortex_m::asm::wfi();
-
     }
 }
 
@@ -337,7 +254,7 @@ fn SysTick() {
 fn TIM2() {
     // Clear IRQ flags
     unsafe {
-        let tim2 =  pac::Peripherals::steal().TIM2;
+        let tim2 = &*pac::TIM2::ptr();
         tim2.sr.write(|w| w.bits(0));
     }
     let reverse = REVERSE_DIR.load(Ordering::Relaxed);
@@ -351,4 +268,3 @@ fn TIM2() {
 
     pwm.step(reverse);
 }
-

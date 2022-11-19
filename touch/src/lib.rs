@@ -3,6 +3,7 @@
 
 pub mod button;
 pub mod linear;
+pub mod tsc;
 
 /// Enumeration of touch activity states
 

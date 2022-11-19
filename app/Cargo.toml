@@ -2,6 +2,7 @@
 name = "speedway"
 version = "0.1.0"
 edition = "2021"
+resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,7 +12,7 @@ cortex-m-rt = "0.7"
 heapless = "0.7"
 panic-halt = "0.2"
 stm32f0xx-hal = { version = "0.18", features = ["stm32f051"] }
-touch = { path = '../touch' }
+touch = { path = '../touch', features=["stm32f0x1"] }
 
 [profile.release]
 lto = true

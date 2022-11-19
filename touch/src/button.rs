@@ -30,9 +30,9 @@ impl<'a, const N: usize> Button<'a, N> {
         let mut deltas = [0u16; N];
         
         for i in 0..N {
-            deltas[i] = -((self.reference[i] as i16).saturating_sub(measurements[i] as i16)) as u16;
+            let d = (self.reference[i] as i16) - (measurements[i] as i16);
+            deltas[i] = if d < 0 { 0 } else { d as u16 };
         }
-        
         
         self.state = match self.state {
             TouchState::Startup(counter) => {
@@ -89,7 +89,7 @@ pub mod test {
         let config = &DEFAULT_TOUCH_CONFIG;
         let mut b = Button::new(Some(config));
 
-        const REF: u16 = 100;
+        const REF: u16 = 1000;
 
         for _ in 0..config.calibration_delay + config.calibration_samples + 1 {
             b.push([REF]);
@@ -99,14 +99,14 @@ pub mod test {
         // "Touch" it for enough samples to get through debounce
         for _ in 0..DEFAULT_TOUCH_CONFIG.debounce {
             assert!(!b.active());
-            b.push([REF + config.detect_threshold + 1]);
+            b.push([REF - config.detect_threshold - 1]);
         }
 
         // Now it should be active
         assert!(b.active(), "Not active after debounce");
         
         // Down to hysteresis value, it should remain active
-        b.push([REF + config.detect_threshold - config.detect_hysteresis + 1]);
+        b.push([REF - config.detect_threshold + config.detect_hysteresis - 1]);
         assert!(b.active(), "Became inactive too soon despite hysteresis");
 
         b.push([REF]);

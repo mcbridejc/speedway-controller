@@ -3,7 +3,13 @@ name = "touch"
 version = "0.1.0"
 edition = "2021"
 
-[profile.release]
-lto = true
-codegen-units = 1
-debug = true
+[dependencies]
+stm32f3 = { version = "0.15", default-features=false, optional = true }
+stm32f0 = { version = "0.14.0", default-features=false, optional = true }
+
+[features]
+stm32f303 = ["stm32f3/stm32f303"]
+stm32f0x1 = ["stm32f0/stm32f0x1"]
+
+
+

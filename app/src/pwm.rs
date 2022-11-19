@@ -90,7 +90,6 @@ pub struct CurrentControl {
     tim3: pac::TIM3,
     stepper: BipolarMicrostepper,
     stepper_pos: u16,
-    enabled: bool,
     power: i16,
 }
 
@@ -103,7 +102,6 @@ impl CurrentControl {
             tim3: tim3,
             stepper: BipolarMicrostepper::new(),
             stepper_pos: 0,
-            enabled: false,
             power: 32767,
         };
         let full_scale = obj.configure(frequency, rcc.clocks);

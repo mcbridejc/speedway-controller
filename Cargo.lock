@@ -367,6 +367,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "stm32f3"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b28b37228ef3fa47956af38c6abd756e912f244c1657f14e66d42fc8d74ea96f"
+dependencies = [
+ "bare-metal 1.0.0",
+ "cortex-m",
+ "vcell",
+]
+
+[[package]]
 name = "syn"
 version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -380,6 +391,10 @@ dependencies = [
 [[package]]
 name = "touch"
 version = "0.1.0"
+dependencies = [
+ "stm32f0",
+ "stm32f3",
+]
 
 [[package]]
 name = "unicode-ident"
