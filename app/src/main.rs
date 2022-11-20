@@ -54,6 +54,8 @@ static TOUCH_CONFIG: TouchConfig = TouchConfig {
     debounce: 3,
 };
 
+/// Controls the frequency of the motor PWM outputs from TIM1/TIM3
+const PWM_FREQUENCY: u32 = 30_000;
 /// The minimum microstep frequency
 /// At speeds below this, current is turned off
 const MIN_STEP_FREQ: u32 = 8;
@@ -109,7 +111,7 @@ fn main() -> ! {
 
     let mut touch = Tsc::new(None);
 
-    let mut pwm = pwm::CurrentControl::new(dp.TIM1, dp.TIM3, &mut rcc, 30.khz());
+    let mut pwm = pwm::CurrentControl::new(dp.TIM1, dp.TIM3, &mut rcc, PWM_FREQUENCY.hz());
 
     // Fixed guard rail duty cycle for now.
     // We might want to scale this with input voltage to approximately constant current.
