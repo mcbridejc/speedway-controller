@@ -82,9 +82,6 @@ pub fn half_ended_pos(deltas: &[u16], detect_threshold: u16) -> Option<u16> {
         }
     };
 
-    // println!("Index: {} {} {}", index_low, index_mid, index_high);
-    // println!("Delta: {} {} {}", delta_low, delta_mid, delta_high);
-    // println!("x0: {}, x1: {}, x2: {}", x0, x1, x2);
     // xn are 10 bits, deltas are (at most) 14 bits. i32 is safe from overflow.
     let mut center = (x0 * delta_low + x1 * delta_mid + x2 * delta_high) / (delta_low + delta_mid + delta_high);
 
@@ -105,6 +102,8 @@ pub fn half_ended_pos(deltas: &[u16], detect_threshold: u16) -> Option<u16> {
 /// ---------------------------
 /// | 1 |  2  | ... |  N  | 1 |
 /// ---------------------------
+///
+///
 pub struct HalfEndedLinear<'a, const N: usize> {
     pub button: Button<'a, N>,
     pub deltas: [u16; N],
@@ -118,6 +117,11 @@ impl<'a, const N: usize> HalfEndedLinear<'a, N> {
         }
     }
 
+    /// Return the current position of the slider
+    ///
+    /// Returns None, if the slider is not active (i.e. not touched),
+    /// and Some(value) where value is the position of the touch along the slider, with
+    /// range [0,1023].
     pub fn pos(&mut self) -> Option<u16> {
         if self.active() {
             half_ended_pos(&self.deltas, self.button.config.detect_threshold)
@@ -129,6 +133,7 @@ impl<'a, const N: usize> HalfEndedLinear<'a, N> {
     pub fn active(&self) -> bool {
         self.button.active()
     }
+
     /// Input a new sample for all electrodes in the linear array
     ///
     /// Returns the latest positions if a touch is detected, otherwise None
@@ -149,12 +154,9 @@ impl<'a, const N: usize> HalfEndedLinear<'a, N> {
 
     /// Begin a calibration
     pub fn force_calibrate(&mut self) {
-
+        self.button.force_calibrate();
     }
 }
-
-
-
 
 #[cfg(test)]
 pub mod test {

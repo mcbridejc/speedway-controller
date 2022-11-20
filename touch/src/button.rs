@@ -1,5 +1,12 @@
 use crate::{TouchConfig, TouchState, DEFAULT_TOUCH_CONFIG};
 
+/// A button controls a capacitive pad which can be touched or not touched.
+///
+/// It is possible for a button to include multiple capacitance values, in which case the button
+/// will activate when any of the inputs meet the requirements, and will deactivate when none of
+/// then do.
+///
+/// A a TouchConfig struct can be (optionally) rovided to alter default parameters.
 pub struct Button<'a, const N: usize> {
     pub reference: [u32; N],
     pub state: TouchState,
@@ -7,16 +14,18 @@ pub struct Button<'a, const N: usize> {
 }
 
 impl<'a, const N: usize> Button<'a, N> {
+    /// Create a new button with optional configuration parameters
     pub fn new(config: Option<&'a TouchConfig>) -> Self {
         let config = config.unwrap_or(&DEFAULT_TOUCH_CONFIG);
         Self {
             reference: [0; N],
             state: TouchState::Startup(config.calibration_delay),
-        
+
             config,
         }
     }
 
+    /// Returns true if the button is in the Active state (i.e. is touched)
     pub fn active(&self) -> bool {
         match self.state {
             TouchState::Active => true,
@@ -25,15 +34,14 @@ impl<'a, const N: usize> Button<'a, N> {
     }
 
     /// Process a new measurement for this touch button
-    /// 
     pub fn push(&mut self, measurements: [u16; N]) -> TouchState {
         let mut deltas = [0u16; N];
-        
+
         for i in 0..N {
             let d = (self.reference[i] as i16) - (measurements[i] as i16);
             deltas[i] = if d < 0 { 0 } else { d as u16 };
         }
-        
+
         self.state = match self.state {
             TouchState::Startup(counter) => {
                 if counter == 0 {
@@ -77,6 +85,12 @@ impl<'a, const N: usize> Button<'a, N> {
 
         self.state
     }
+
+    /// Force a re-calibration of the reference capacitance
+    pub fn force_calibrate(&mut self) {
+        self.reference = [0; N];
+        self.state = TouchState::Calibrate(self.config.calibration_samples);
+    }
 }
 
 #[cfg(test)]
@@ -104,14 +118,14 @@ pub mod test {
 
         // Now it should be active
         assert!(b.active(), "Not active after debounce");
-        
+
         // Down to hysteresis value, it should remain active
         b.push([REF - config.detect_threshold + config.detect_hysteresis - 1]);
         assert!(b.active(), "Became inactive too soon despite hysteresis");
 
         b.push([REF]);
         assert!(!b.active(), "Didn't deactivate");
-        
+
     }
 
     pub fn test_button_negative() {
@@ -129,7 +143,7 @@ pub mod test {
             assert!(!b.active());
             b.push([REF - 30]);
         }
-        
+
         assert!(!b.active());
     }
 

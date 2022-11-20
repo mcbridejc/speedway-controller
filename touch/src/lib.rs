@@ -18,11 +18,16 @@ pub enum TouchState {
 /// Configuration structure for all touch inputs
 #[derive(Clone, Copy, Debug)]
 pub struct TouchConfig {
+    /// The number of counts of delta capacitance required to active the button
     pub detect_threshold: u16,
+    /// The hysteresis in deactivation. Once active, counts must fall below `detect_threshold -
+    /// detect_hysteresis` in order to deactivate.
     pub detect_hysteresis: u16,
+    /// Number of samples to wait after initialization before starting calibration
     pub calibration_delay: u16,
+    /// Number of sample to collect for reference level calibration
     pub calibration_samples: u16,
-    /// Number of samples required to transition to touched
+    /// Number of positive samples required to transition to Active state
     pub debounce: u16,
 }
 
@@ -40,4 +45,3 @@ impl TouchConfig {
 
 pub const DEFAULT_TOUCH_CONFIG: TouchConfig = TouchConfig::default();
 pub const FULL_SCALE: u16 = 1024;
-const DEBOUNCE: u16 = 4;
