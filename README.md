@@ -1,7 +1,7 @@
 Gauss Speedway Controller
 =========================
 
-Control software for the [Guass Speedway](https://github.com/mcbridejc/gauss-speedway).
+Control software for the [Guass Speedway](https://github.com/mcbridejc/GaussSpeedway).
 
 This runs on an STM32F051 MCU, reads the capacitive touch sensors, and drives the three 
 current outputs (two bipolar phases + one guard rail) accordingly. It also has a serial 
