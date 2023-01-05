@@ -236,7 +236,7 @@ fn main() -> ! {
             target_velocity = if stop_button.active() {
                 0
             } else if let Some(pos) = rev_pos {
-                (touch::FULL_SCALE - pos) as i32 * MAX_STEP_FREQ as i32  / touch::FULL_SCALE as i32 + MIN_STEP_FREQ as i32
+                pos as i32 * MAX_STEP_FREQ as i32  / touch::FULL_SCALE as i32 + MIN_STEP_FREQ as i32
             } else if let Some(pos) = fwd_pos {
                 -(pos as i32) * MAX_STEP_FREQ as i32  / touch::FULL_SCALE as i32 - MIN_STEP_FREQ as i32
             } else {
