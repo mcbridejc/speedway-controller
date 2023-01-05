@@ -6,6 +6,7 @@ mod pwm;
 mod serial;
 mod step_timer;
 
+use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering, AtomicU32};
 use core::cell::RefCell;
 use cortex_m;
@@ -47,32 +48,73 @@ static SAMPLE_GROUP2: SampleConfig = SampleConfig::new()
     .sample(G3Ch4).channel(G3Ch3); // Fwd 3
 
 static TOUCH_CONFIG: TouchConfig = TouchConfig {
-    detect_threshold: 200,
-    detect_hysteresis: 50,
+    detect_threshold: 500,
+    detect_hysteresis: 60,
     calibration_delay: 10,
     calibration_samples: 10,
     debounce: 3,
 };
 
 /// Controls the frequency of the motor PWM outputs from TIM1/TIM3
-const PWM_FREQUENCY: u32 = 30_000;
+const PWM_FREQUENCY: u32 = 35_000;
 /// The minimum microstep frequency
 /// At speeds below this, current is turned off
 const MIN_STEP_FREQ: u32 = 8;
 /// The maximum microstep frequency
-const MAX_STEP_FREQ: u32 = 900;
+const MAX_STEP_FREQ: u32 = 1200;
 /// The acceleration in steps/s per each 40ms period
 const ACCEL: u32 = 40;
-/// Duty cycle at slower speeds
-const LOW_POWER_DUTY: i16 = 22000;
-/// Duty cycle at high speeds
-const HIGH_POWER_DUTY: i16 = 32767;
 /// When velocity exceeds this threshold, switch from low to high power
 const POWER_SPEED_THRESHOLD: i32 = 500;
 
 static REVERSE_DIR: AtomicBool = AtomicBool::new(false);
 static PWM: Mutex<RefCell<Option<CurrentControl>>> = Mutex::new(RefCell::new(None));
 static TIME: AtomicU32 = AtomicU32::new(0);
+
+
+/// Desired current for guard rails (amps)
+const IGUARD: f32 = 0.8;
+/// Desired peak current for phase traces (amps)
+const IDRIVE_LOW: f32 = 0.7;
+const IDRIVE_HIGH: f32 = 1.0;
+// Resistance of guard including trace and driver (ohms)
+const RGUARD: f32 = 0.8 + 1.4;
+/// Resistance of phase including trace and driver (ohms)
+const RDRIVE: f32 = 5.25 + 1.4;
+/// Scales counts to volts for ADC measureuemt
+const VSCALE: f32 = 3.22e-3;
+
+
+fn get_guard_dutycycle(vin: u16) -> i16 {
+    // Precompute the numerator at compile time, so we don't need float routines
+    const num: u32 = (32768.0 * IGUARD * RGUARD / VSCALE) as u32;
+    let duty: u32 = num / vin as u32;
+
+    if duty > 32767 {
+        32767
+    } else {
+        duty as i16
+    }
+}
+
+// Get the drive power based on input voltage and current velocity
+fn get_phase_power(vin: u16, vel: i32) -> i16 {
+    // Precompute the numerator at compile time, so we don't need float routines
+    const num_high: u32 = (32768.0 * IDRIVE_HIGH * RDRIVE / VSCALE) as u32;
+    const num_low: u32 = (32768.0 * IDRIVE_LOW * RDRIVE / VSCALE) as u32;
+    let duty: u32 = if vel < POWER_SPEED_THRESHOLD {
+        num_low / vin as u32
+    } else {
+        num_high / vin as u32
+    };
+
+    if duty > 32767 {
+        32767
+    } else {
+        duty as i16
+    }
+}
+
 
 #[entry]
 fn main() -> ! {
@@ -109,13 +151,19 @@ fn main() -> ! {
     let _b_in1 = gpioa.pa9.into_alternate_af2(&fake_cs);
     let _b_in2 = gpioa.pa8.into_alternate_af2(&fake_cs);
 
-    let mut touch = Tsc::new(None);
+    // Get input voltage sense pin
+    let mut vin_sense = gpioa.pa3.into_analog(&fake_cs);
+    let mut adc = hal::adc::Adc::new(dp.ADC, &mut rcc);
+
+    let touch_options = touch::tsc::Config {
+        clock_prescale: None,
+        charge_transfer_high: Some(touch::tsc::ChargeDischargeTime::C2),
+        charge_transfer_low: Some(touch::tsc::ChargeDischargeTime::C2),
+        max_count: Some(touch::tsc::MaxCount::U8191),
+    };
+    let mut touch = Tsc::new(Some(touch_options));
 
     let mut pwm = pwm::CurrentControl::new(dp.TIM1, dp.TIM3, &mut rcc, PWM_FREQUENCY.hz());
-
-    // Fixed guard rail duty cycle for now.
-    // We might want to scale this with input voltage to approximately constant current.
-    pwm.set_guard_duty(12000);
 
     pwm.enable();
     cortex_m::interrupt::free(|cs| {
@@ -138,12 +186,17 @@ fn main() -> ! {
     serial::uart1::init(uart, 4);
 
     let mut rev_linear = HalfEndedLinear::new(Some(&TOUCH_CONFIG));
+    rev_linear.set_scale_calibration([436, 191, 875]);
     let mut fwd_linear = HalfEndedLinear::new(Some(&TOUCH_CONFIG));
+    fwd_linear.set_scale_calibration([196, 232, 187]);
     let mut stop_button = Button::new(Some(&TOUCH_CONFIG));
 
     let mut target_velocity: i32 = 0;
     let mut current_velocity: i32 = 0;
     let mut next_time = 10;
+    let mut next_tx = 10;
+
+    let mut vin_filt: u32 = 0;
 
     loop {
         let time = TIME.load(Ordering::Relaxed);
@@ -156,8 +209,8 @@ fn main() -> ! {
 
             touch.acquire(&SAMPLE_GROUP1);
             rev_samples[0] = touch.read_group(1);
-            rev_samples[1] = touch.read_group(2);
-            rev_samples[2] = touch.read_group(3);
+            rev_samples[1] = touch.read_group(3);
+            rev_samples[2] = touch.read_group(2);
             stop_samples[0] = touch.read_group(6);
 
             // Some delay is needed to discharge the sampling capacitor
@@ -175,6 +228,9 @@ fn main() -> ! {
 
             let fwd_pos = fwd_linear.pos();
             let rev_pos = rev_linear.pos();
+
+            let vsense_read: u16 = adc.read(&mut vin_sense).unwrap();
+            vin_filt = (9 * vin_filt + vsense_read as u32) / 10;
 
             // Update target velocity if any buttons are pressed
             target_velocity = if stop_button.active() {
@@ -203,6 +259,10 @@ fn main() -> ! {
             cortex_m::interrupt::free(|cs| {
                 let mut pwm_cell = PWM.borrow(cs).borrow_mut();
                 let pwm = pwm_cell.as_mut().unwrap();
+                // Scale guard duty cycle based on input voltage
+                pwm.set_guard_duty(get_guard_dutycycle(vin_filt as u16));
+                // Scale phase duty cycle based on input voltage and speed
+                pwm.set_power(get_phase_power(vin_filt as u16, current_velocity.abs()));
 
                 if current_velocity.abs() < MIN_STEP_FREQ as i32 {
                     pwm.disable();
@@ -214,18 +274,11 @@ fn main() -> ! {
                     step_timer.enable_irq();
                 }
 
-                // Set output power based on speed. Empirically, less current is required at lower
-                // speed
-                let magvel = current_velocity.abs();
-                if magvel < POWER_SPEED_THRESHOLD {
-                    pwm.set_power(LOW_POWER_DUTY);
-                } else {
-                    pwm.set_power(HIGH_POWER_DUTY);
-                }
             });
 
             // Periodically print the capacitive touch values out the serial port
-            if time % 20 == 0 {
+            if time > next_tx {
+                next_tx = next_tx + 20;
                 let mut writer = serial::uart1::writer();
                 core::fmt::write(&mut writer, format_args!("READ {} {} {} {} {} {} {}\r\n",
                     fwd_samples[0], fwd_samples[1], fwd_samples[2],
@@ -240,6 +293,11 @@ fn main() -> ! {
                         rev_linear.pos().unwrap_or(65535),
                         stop_button.active()
                     )
+                ).unwrap();
+
+                core::fmt::write(
+                    &mut writer,
+                    format_args!("VIN: {}\r\n", vin_filt),
                 ).unwrap();
             }
         }

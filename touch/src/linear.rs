@@ -107,6 +107,7 @@ pub fn half_ended_pos(deltas: &[u16], detect_threshold: u16) -> Option<u16> {
 pub struct HalfEndedLinear<'a, const N: usize> {
     pub button: Button<'a, N>,
     pub deltas: [u16; N],
+    pub scales: [u16; N],
 }
 
 impl<'a, const N: usize> HalfEndedLinear<'a, N> {
@@ -114,9 +115,16 @@ impl<'a, const N: usize> HalfEndedLinear<'a, N> {
         Self {
             button: Button::new(config),
             deltas: [0; N],
+            scales: [256; N],
         }
     }
 
+    /// Set the scale factor calibration to be applied to the deltas
+    ///
+    /// Scales are 8.8 fixed point values; the floating point scale factor is scale[n] / 256
+    pub fn set_scale_calibration(&mut self, scales: [u16; N]) {
+        self.scales = scales
+    }
     /// Return the current position of the slider
     ///
     /// Returns None, if the slider is not active (i.e. not touched),
@@ -140,6 +148,15 @@ impl<'a, const N: usize> HalfEndedLinear<'a, N> {
     pub fn push(&mut self, measurements: [u16; N]) -> Option<u16> {
         for i in 0..N {
             self.deltas[i] = (self.button.reference[i] as u16).saturating_sub(measurements[i]);
+        }
+
+        for i in 0..N {
+            let d: u32 = self.deltas[i] as u32 * self.scales[i] as u32 / 256;
+            if d > u16::MAX as u32 {
+                self.deltas[i] = u16::MAX;
+            } else {
+                self.deltas[i] = d as u16;
+            }
         }
 
         let state = self.button.push(measurements);
