@@ -63,7 +63,7 @@ const MIN_STEP_FREQ: u32 = 8;
 /// The maximum microstep frequency
 const MAX_STEP_FREQ: u32 = 1200;
 /// The acceleration in steps/s per each 40ms period
-const ACCEL: u32 = 40;
+const ACCEL: u32 = 100;
 /// When velocity exceeds this threshold, switch from low to high power
 const POWER_SPEED_THRESHOLD: i32 = 500;
 
