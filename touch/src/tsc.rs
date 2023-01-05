@@ -221,6 +221,7 @@ impl Tsc {
         let mut iogcsr: u32 = 0;
         let mut ioscr: u32 = 0;
         let mut ioccr: u32 = 0;
+        let mut iohcr: u32 = 0xffffffff;
 
         for gid in 0..sample_config.groups.len() {
             if sample_config.groups[gid] != 0 {
@@ -231,14 +232,17 @@ impl Tsc {
                 iogcsr |= 1 << (gid);
                 // Set the sample cap input
                 ioscr |= 1 << ((gid as u8) * 4 + sample_id - 1);
+                iohcr &= !(1 << ((gid as u8) * 4 + sample_id - 1));
                 // Enable the input
                 ioccr |= (channel_mask as u32) << ((gid) * 4);
+                iohcr &= !((channel_mask as u32) << (gid * 4));
             }
         }
 
         self.tsc.iogcsr.write(|w| unsafe { w.bits(iogcsr) });
         self.tsc.ioscr.write(|w| unsafe { w.bits(ioscr) });
         self.tsc.ioccr.write(|w| unsafe { w.bits(ioccr) });
+        self.tsc.iohcr.write(|w| unsafe { w.bits(iohcr) });
 
         // Start the acquisition
         self.clear_flags();
