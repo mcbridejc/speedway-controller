@@ -6,7 +6,6 @@ mod pwm;
 mod serial;
 mod step_timer;
 
-use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering, AtomicU32};
 use core::cell::RefCell;
 use cortex_m;
@@ -87,8 +86,8 @@ const VSCALE: f32 = 3.22e-3;
 
 fn get_guard_dutycycle(vin: u16) -> i16 {
     // Precompute the numerator at compile time, so we don't need float routines
-    const num: u32 = (32768.0 * IGUARD * RGUARD / VSCALE) as u32;
-    let duty: u32 = num / vin as u32;
+    const NUM: u32 = (32768.0 * IGUARD * RGUARD / VSCALE) as u32;
+    let duty: u32 = NUM / vin as u32;
 
     if duty > 32767 {
         32767
@@ -100,12 +99,12 @@ fn get_guard_dutycycle(vin: u16) -> i16 {
 // Get the drive power based on input voltage and current velocity
 fn get_phase_power(vin: u16, vel: i32) -> i16 {
     // Precompute the numerator at compile time, so we don't need float routines
-    const num_high: u32 = (32768.0 * IDRIVE_HIGH * RDRIVE / VSCALE) as u32;
-    const num_low: u32 = (32768.0 * IDRIVE_LOW * RDRIVE / VSCALE) as u32;
+    const NUM_HIGH: u32 = (32768.0 * IDRIVE_HIGH * RDRIVE / VSCALE) as u32;
+    const NUM_LOW: u32 = (32768.0 * IDRIVE_LOW * RDRIVE / VSCALE) as u32;
     let duty: u32 = if vel < POWER_SPEED_THRESHOLD {
-        num_low / vin as u32
+        NUM_LOW / vin as u32
     } else {
-        num_high / vin as u32
+        NUM_HIGH / vin as u32
     };
 
     if duty > 32767 {
