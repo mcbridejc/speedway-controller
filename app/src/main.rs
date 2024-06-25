@@ -47,8 +47,8 @@ static SAMPLE_GROUP2: SampleConfig = SampleConfig::new()
     .sample(G3Ch4).channel(G3Ch3); // Fwd 3
 
 static TOUCH_CONFIG: TouchConfig = TouchConfig {
-    detect_threshold: 500,
-    detect_hysteresis: 60,
+    detect_threshold: 1000,
+    detect_hysteresis: 40,
     calibration_delay: 10,
     calibration_samples: 10,
     debounce: 3,
